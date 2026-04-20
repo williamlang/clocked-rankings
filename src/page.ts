@@ -33,21 +33,22 @@ function circularMeanHour(hours: number[]): number {
   return mean < 0 ? mean + 24 : mean
 }
 
-const SESSION_GAP_MS = 2 * 3_600_000
-function buildSessions(fights: { start: number; end: number }[]): Interval[] {
-  if (fights.length === 0) return []
-  const sorted = [...fights].sort((a, b) => a.start - b.start)
-  const sessions: Interval[] = [{ first: sorted[0].start, last: sorted[0].end }]
+// Reports longer than this are treated as multi-day and split via fights.
+const MAX_SINGLE_DAY_MS = 14 * 3_600_000
+// Gap threshold for splitting fights within a multi-day report.
+const MULTI_DAY_GAP_MS = 4 * 3_600_000
+
+function mergeIntervals(intervals: Interval[]): Interval[] {
+  if (intervals.length === 0) return []
+  const sorted = [...intervals].sort((a, b) => a.first - b.first)
+  const out: Interval[] = [{ ...sorted[0] }]
   for (let i = 1; i < sorted.length; i++) {
-    const cur = sessions[sessions.length - 1]
-    const f = sorted[i]
-    if (f.start - cur.last <= SESSION_GAP_MS) {
-      cur.last = Math.max(cur.last, f.end)
-    } else {
-      sessions.push({ first: f.start, last: f.end })
-    }
+    const prev = out[out.length - 1]
+    const iv = sorted[i]
+    if (iv.first <= prev.last) prev.last = Math.max(prev.last, iv.last)
+    else out.push({ ...iv })
   }
-  return sessions
+  return out
 }
 
 const WEEK_MS = 7 * 24 * 3_600_000
@@ -87,25 +88,61 @@ interface GuildData {
 }
 
 function loadRanked(): GuildData[] {
-  const fights = db
+  // Grab mythic-team reports: those containing ≥1 tier-Mythic fight.
+  const reports = db
     .prepare(`
       WITH mythic_reports AS (
         SELECT DISTINCT report_code FROM fights
         WHERE difficulty = 5 AND encounter_id IN (SELECT id FROM encounters)
       )
-      SELECT f.guild_id, f.start_time, f.end_time
-      FROM fights f
-      JOIN guilds g ON g.id = f.guild_id
-      WHERE f.report_code IN (SELECT report_code FROM mythic_reports)
-        AND (g.ce_achieved_at IS NULL OR f.start_time <= g.ce_achieved_at)
+      SELECT r.guild_id, r.code, r.first_pull, r.last_pull
+      FROM reports r
+      JOIN guilds g ON g.id = r.guild_id
+      WHERE r.first_pull IS NOT NULL AND r.last_pull IS NOT NULL
+        AND g.reports_synced_at IS NOT NULL
+        AND r.code IN (SELECT report_code FROM mythic_reports)
+        AND (g.ce_achieved_at IS NULL OR r.first_pull <= g.ce_achieved_at)
     `)
-    .all() as { guild_id: number; start_time: number; end_time: number }[]
+    .all() as { guild_id: number; code: string; first_pull: number; last_pull: number }[]
 
-  const byGuild = new Map<number, { start: number; end: number }[]>()
-  for (const f of fights) {
-    const arr = byGuild.get(f.guild_id) ?? []
-    arr.push({ start: f.start_time, end: f.end_time })
-    byGuild.set(f.guild_id, arr)
+  // For multi-day reports, grab their fights so we can split per raid night.
+  const multiDayCodes = reports.filter(r => r.last_pull - r.first_pull > MAX_SINGLE_DAY_MS).map(r => r.code)
+  const fightsPerReport = new Map<string, { start: number; end: number }[]>()
+  if (multiDayCodes.length > 0) {
+    const placeholders = multiDayCodes.map(() => '?').join(',')
+    const fightRows = db
+      .prepare(
+        `SELECT report_code, start_time, end_time FROM fights
+         WHERE report_code IN (${placeholders}) ORDER BY report_code, start_time`,
+      )
+      .all(...multiDayCodes) as { report_code: string; start_time: number; end_time: number }[]
+    for (const f of fightRows) {
+      const arr = fightsPerReport.get(f.report_code) ?? []
+      arr.push({ start: f.start_time, end: f.end_time })
+      fightsPerReport.set(f.report_code, arr)
+    }
+  }
+
+  const byGuild = new Map<number, Interval[]>()
+  for (const r of reports) {
+    const arr = byGuild.get(r.guild_id) ?? []
+    if (r.last_pull - r.first_pull <= MAX_SINGLE_DAY_MS) {
+      arr.push({ first: r.first_pull, last: r.last_pull })
+    } else {
+      // Multi-day report — split into per-night intervals via fight gaps.
+      const fights = fightsPerReport.get(r.code) ?? []
+      let cur: Interval | null = null
+      for (const f of fights) {
+        if (cur && f.start - cur.last <= MULTI_DAY_GAP_MS) {
+          cur.last = Math.max(cur.last, f.end)
+        } else {
+          if (cur) arr.push(cur)
+          cur = { first: f.start, last: f.end }
+        }
+      }
+      if (cur) arr.push(cur)
+    }
+    byGuild.set(r.guild_id, arr)
   }
 
   const guilds = db
@@ -126,7 +163,7 @@ function loadRanked(): GuildData[] {
 
   const out: GuildData[] = []
   for (const g of guilds) {
-    const sessions = buildSessions(byGuild.get(g.id) ?? [])
+    const sessions = mergeIntervals(byGuild.get(g.id) ?? [])
     const total_ms = sessions.reduce((s, iv) => s + (iv.last - iv.first), 0)
     if (total_ms === 0) continue
     const raid_weeks = Math.max(new Set(sessions.map(iv => bucketKey(iv.first))).size, 1)
@@ -392,7 +429,9 @@ export function renderRankingsPage(): string {
       }
 
       function superlatives(rows) {
-        const qualified = rows.filter(r => r.bosses >= 3 && r.total_hours >= 5);
+        // Require enough raid data so guilds with sparse/kill-only logs don't
+        // sweep "Most Efficient" or "Fastest Progression".
+        const qualified = rows.filter(r => r.bosses >= 3 && r.total_hours >= 15 && r.raid_nights >= 6);
         if (qualified.length === 0) return [];
         const mostEfficient = qualified.slice().sort((a, b) => b.bosses / b.total_hours - a.bosses / a.total_hours)[0];
         const grindiest = rows.slice().sort((a, b) => b.hours_per_week - a.hours_per_week)[0];
