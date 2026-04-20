@@ -90,15 +90,8 @@ export async function fetchEncounterRankings(
     worldData: { encounter: { fightRankings: EncounterRankingsJSON | { error: string } } }
   }>(GET_ENCOUNTER_GUILD_RANKINGS, { encounterID, page })
   const raw = data.worldData.encounter.fightRankings
-  // WCL returns { error: "..." } when page > 20 (hard cap)
-  if ('error' in raw) {
-    console.log(`  [fetchEncounterRankings] enc=${encounterID} page=${page} error: ${(raw as { error: string }).error}`)
-    return { page, hasMorePages: false, count: 0, rankings: [] }
-  }
-  if (!Array.isArray(raw.rankings)) {
-    console.log(`  [fetchEncounterRankings] enc=${encounterID} page=${page} unexpected shape: ${JSON.stringify(raw).slice(0, 200)}`)
-    return { page, hasMorePages: false, count: 0, rankings: [] }
-  }
+  // WCL returns { error: "..." } when page > 20 (hard cap) or invalid partition
+  if ('error' in raw) return { page, hasMorePages: false, count: 0, rankings: [] }
   return raw
 }
 

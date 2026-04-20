@@ -29,8 +29,6 @@ export async function syncGuilds(encounterIDs: number[]): Promise<void> {
     ON CONFLICT(id) DO NOTHING
   `)
 
-  console.log(`  [syncGuilds] iterating ${encounterIDs.length} encounters: ${encounterIDs.join(',')}`)
-
   for (let i = cp.encounterIdx; i < encounterIDs.length; i++) {
     const encounterID = encounterIDs[i]
     let page = i === cp.encounterIdx ? cp.page : 1
@@ -38,7 +36,6 @@ export async function syncGuilds(encounterIDs: number[]): Promise<void> {
     while (true) {
       saveCheckpoint({ encounterIdx: i, page })
       const rankings = await fetchEncounterRankings(encounterID, page)
-      console.log(`  [syncGuilds] enc ${encounterID} page ${page}: ${rankings.rankings.length} entries, hasMore=${rankings.hasMorePages}`)
 
       const tx = db.transaction(() => {
         for (const entry of rankings.rankings) {

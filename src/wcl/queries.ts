@@ -19,6 +19,7 @@ export const GET_ENCOUNTER_GUILD_RANKINGS = `
         fightRankings(
           difficulty: 5
           page: $page
+          partition: 1
         )
       }
     }
