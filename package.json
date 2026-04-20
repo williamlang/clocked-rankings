@@ -6,7 +6,8 @@
     "start": "tsx src/cli.ts",
     "dev": "tsx watch src/cli.ts",
     "sync": "tsx src/sync/run.ts",
-    "build": "STATIC_BUILD=1 tsx src/build.ts"
+    "build": "STATIC_BUILD=1 tsx src/build.ts",
+    "credits": "tsx scripts/credits.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

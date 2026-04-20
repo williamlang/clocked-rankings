@@ -1,4 +1,4 @@
-import { db, getState } from './db.js'
+import { db } from './db.js'
 
 interface Interval {
   first: number
@@ -201,24 +201,6 @@ function loadRanked(): GuildData[] {
   return out
 }
 
-function rateLimitBadge(): string {
-  const raw = getState('last_rate_limit')
-  if (!raw) return ''
-  const rl = JSON.parse(raw) as {
-    limitPerHour: number
-    pointsSpentThisHour: number
-    pointsResetIn: number
-    capturedAt: number
-  }
-  const elapsed = (Date.now() - rl.capturedAt) / 1000
-  const resetInSec = Math.max(rl.pointsResetIn - elapsed, 0)
-  const remaining = (rl.limitPerHour - rl.pointsSpentThisHour).toFixed(0)
-  const pct = (rl.pointsSpentThisHour / rl.limitPerHour) * 100
-  const color = pct > 90 ? '#ef4444' : pct > 70 ? '#d4a017' : '#10b981'
-  const mins = Math.ceil(resetInSec / 60)
-  return `<span class="rl-badge" style="color: ${color};">${remaining} credits left · resets in ${mins}m</span>`
-}
-
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 }
@@ -284,7 +266,6 @@ export function renderRankingsPage(): string {
   <style>
     body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; color: #e5e7eb; background: #0f1115; }
     .header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
-    .rl-badge { font-size: 13px; font-variant-numeric: tabular-nums; }
     .awards { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
     .award { flex: 1 1 200px; background: linear-gradient(180deg, #1a2332 0%, #161b22 100%);
       border: 1px solid #2d3748; border-radius: 6px; padding: 0.75rem 1rem; }
@@ -335,7 +316,6 @@ export function renderRankingsPage(): string {
 <body>
   <div class="header">
     <h1>Clocked <span class="tagline">— hours raided before CE</span></h1>
-    ${rateLimitBadge()}
   </div>
   <div class="sub">
     Ranked by Mythic bosses killed, tiebroken by hours raided per week before Cutting Edge.
