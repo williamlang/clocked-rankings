@@ -25,8 +25,13 @@ interface PendingGuild {
 }
 
 function pendingGuilds(): PendingGuild[] {
+  // Unsynced first, then stalest-synced next — after backfill, this rotates fairly.
   return db
-    .prepare('SELECT id, name FROM guilds WHERE ce_achieved_at IS NULL ORDER BY id')
+    .prepare(`
+      SELECT id, name FROM guilds
+      WHERE ce_achieved_at IS NULL
+      ORDER BY reports_synced_at IS NOT NULL, reports_synced_at, id
+    `)
     .all() as PendingGuild[]
 }
 
@@ -38,6 +43,14 @@ const upsertReport = db.prepare(`
     first_pull = excluded.first_pull,
     last_pull = excluded.last_pull,
     fetched_at = unixepoch()
+`)
+
+const insertFight = db.prepare(`
+  INSERT INTO fights (report_code, fight_id, guild_id, start_time, end_time, encounter_id, difficulty)
+  VALUES (@report_code, @fight_id, @guild_id, @start_time, @end_time, @encounter_id, @difficulty)
+  ON CONFLICT(report_code, fight_id) DO UPDATE SET
+    start_time = excluded.start_time,
+    end_time = excluded.end_time
 `)
 
 const upsertKill = db.prepare(`
@@ -104,12 +117,23 @@ async function syncGuildReports(
         last_pull: lastPull,
       })
 
-      // Record any Mythic kills (we'll filter to tier encounters at CE detection time)
-      for (const f of full.fights) {
-        if (f.kill && f.difficulty === MYTHIC_DIFFICULTY) {
-          upsertKill.run(guild.id, f.encounterID, report.code, full.startTime + f.startTime)
+      const insertFights = db.transaction(() => {
+        for (const f of full.fights) {
+          insertFight.run({
+            report_code: report.code,
+            fight_id: f.id,
+            guild_id: guild.id,
+            start_time: full.startTime + f.startTime,
+            end_time: full.startTime + f.endTime,
+            encounter_id: f.encounterID,
+            difficulty: f.difficulty,
+          })
+          if (f.kill && f.difficulty === MYTHIC_DIFFICULTY) {
+            upsertKill.run(guild.id, f.encounterID, report.code, full.startTime + f.startTime)
+          }
         }
-      }
+      })
+      insertFights()
     }
 
     if (!reports.has_more_pages) break

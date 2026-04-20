@@ -53,6 +53,19 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_reports_guild ON reports(guild_id);
 
+  CREATE TABLE IF NOT EXISTS fights (
+    report_code TEXT NOT NULL,
+    fight_id INTEGER NOT NULL,
+    guild_id INTEGER NOT NULL REFERENCES guilds(id),
+    start_time INTEGER NOT NULL,
+    end_time INTEGER NOT NULL,
+    encounter_id INTEGER,
+    difficulty INTEGER,
+    PRIMARY KEY (report_code, fight_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_fights_guild ON fights(guild_id, start_time);
+
   CREATE TABLE IF NOT EXISTS mythic_kills (
     guild_id INTEGER NOT NULL REFERENCES guilds(id),
     encounter_id INTEGER NOT NULL,

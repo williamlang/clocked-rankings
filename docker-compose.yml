@@ -1,0 +1,31 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3457:3457"
+    volumes:
+      # Source mounts for hot reload
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./package.json:/app/package.json
+      - ./tsconfig.json:/app/tsconfig.json
+      - ./.env:/app/.env:ro
+      # Persist DB + OAuth token across container restarts. Also shares the
+      # data with the host so running `npm run sync` outside Docker still works.
+      - ${HOME}/.config/guild-rankings-by-day:/root/.config/guild-rankings-by-day
+    environment:
+      # tsx/chokidar file watching is flaky on bind-mounted volumes on macOS —
+      # polling is slower but reliable.
+      CHOKIDAR_USEPOLLING: "true"
+    restart: unless-stopped
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    command: http app:3457
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040"  # local dashboard — public URL visible here
+    depends_on:
+      - app
+    restart: unless-stopped

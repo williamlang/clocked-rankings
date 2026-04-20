@@ -21,19 +21,4 @@ app.get('/__reload', c => {
   })
 })
 
-app.get('/', c => {
-  const server = c.req.query('server') || undefined
-  const region = c.req.query('region') || undefined
-  const minHoursStr = c.req.query('min_hours')
-  const maxHoursStr = c.req.query('max_hours')
-  const minHours = minHoursStr ? parseFloat(minHoursStr) : undefined
-  const maxHours = maxHoursStr ? parseFloat(maxHoursStr) : undefined
-  return c.html(
-    renderRankingsPage({
-      server,
-      region,
-      minHours: Number.isFinite(minHours!) ? minHours : undefined,
-      maxHours: Number.isFinite(maxHours!) ? maxHours : undefined,
-    }),
-  )
-})
+app.get('/', c => c.html(renderRankingsPage()))

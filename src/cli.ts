@@ -12,7 +12,7 @@ if (!CLIENT_ID || !CLIENT_SECRET) {
 const url = `http://localhost:${PORT}`
 
 serve({ fetch: app.fetch, port: PORT }, () => {
-  console.log(`\nGuild Rankings → ${url}`)
+  console.log(`\nClocked → ${url}`)
   console.log('  Run `npm run sync` to populate the database')
   console.log('  Press Ctrl+C to stop\n')
 })

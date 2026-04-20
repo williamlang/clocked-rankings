@@ -1,76 +1,118 @@
 import { db, getState } from './db.js'
 
-interface Filters {
-  server?: string
-  region?: string
-  minHours?: number
-  maxHours?: number
-}
-
-interface RankingRow {
-  id: number
-  name: string
-  server_name: string | null
-  region: string
-  ce_achieved_at: number | null
-  total_ms: number
-  raid_nights: number
-  raid_weeks: number
-  bosses: number
-}
-
 interface Interval {
   first: number
   last: number
 }
 
-// Merge overlapping pull windows — handles same-day dupes and cross-day overlaps
-// (e.g. a log that straddles midnight alongside a separate upload of the same session).
-function mergeIntervals(intervals: Interval[]): Interval[] {
-  const sorted = [...intervals].sort((a, b) => a.first - b.first)
-  const merged: Interval[] = []
-  for (const iv of sorted) {
-    const prev = merged[merged.length - 1]
-    if (prev && iv.first <= prev.last) {
-      prev.last = Math.max(prev.last, iv.last)
-    } else {
-      merged.push({ ...iv })
-    }
-  }
-  return merged
+const REGION_OFFSET: Record<string, number> = {
+  US: -5,
+  EU: 1,
+  CN: 8,
+  KR: 9,
+  TW: 8,
 }
 
-// Count distinct 7-day buckets anchored to Unix epoch (Thursday 1970-01-01).
-// Not ISO-week-aligned, but stable and correct for "how many separate raid weeks".
+function localHour(ms: number, region: string): number {
+  const offset = REGION_OFFSET[region] ?? 0
+  const shifted = new Date(ms + offset * 3_600_000)
+  return shifted.getUTCHours() + shifted.getUTCMinutes() / 60
+}
+
+function localDay(ms: number, region: string): number {
+  const offset = REGION_OFFSET[region] ?? 0
+  return new Date(ms + offset * 3_600_000).getUTCDay()
+}
+
+function circularMeanHour(hours: number[]): number {
+  if (hours.length === 0) return 0
+  const angles = hours.map(h => (h / 24) * 2 * Math.PI)
+  const s = angles.reduce((a, x) => a + Math.sin(x), 0) / angles.length
+  const c = angles.reduce((a, x) => a + Math.cos(x), 0) / angles.length
+  const mean = (Math.atan2(s, c) / (2 * Math.PI)) * 24
+  return mean < 0 ? mean + 24 : mean
+}
+
+const SESSION_GAP_MS = 2 * 3_600_000
+function buildSessions(fights: { start: number; end: number }[]): Interval[] {
+  if (fights.length === 0) return []
+  const sorted = [...fights].sort((a, b) => a.start - b.start)
+  const sessions: Interval[] = [{ first: sorted[0].start, last: sorted[0].end }]
+  for (let i = 1; i < sorted.length; i++) {
+    const cur = sessions[sessions.length - 1]
+    const f = sorted[i]
+    if (f.start - cur.last <= SESSION_GAP_MS) {
+      cur.last = Math.max(cur.last, f.end)
+    } else {
+      sessions.push({ first: f.start, last: f.end })
+    }
+  }
+  return sessions
+}
+
 const WEEK_MS = 7 * 24 * 3_600_000
 function bucketKey(ms: number): number {
   return Math.floor(ms / WEEK_MS)
 }
 
-function loadRankings(): RankingRow[] {
-  const reports = db
-    .prepare(`
-      SELECT r.guild_id, r.first_pull, r.last_pull
-      FROM reports r
-      JOIN guilds g ON g.id = r.guild_id
-      WHERE r.first_pull IS NOT NULL
-        AND r.last_pull IS NOT NULL
-        AND (g.ce_achieved_at IS NULL OR r.first_pull <= g.ce_achieved_at)
-    `)
-    .all() as { guild_id: number; first_pull: number; last_pull: number }[]
+const CATEGORIES = ['Weekend Warrior', 'Late Night', 'Evening', 'Afternoon', 'Morning'] as const
+type Category = (typeof CATEGORIES)[number]
 
-  const byGuild = new Map<number, Interval[]>()
-  for (const r of reports) {
-    const arr = byGuild.get(r.guild_id) ?? []
-    arr.push({ first: r.first_pull, last: r.last_pull })
-    byGuild.set(r.guild_id, arr)
+function categoryOf(avgHour: number, weekendOnly: boolean): Category {
+  if (weekendOnly) return 'Weekend Warrior'
+  const h = avgHour < 4 ? avgHour + 24 : avgHour
+  if (h >= 22) return 'Late Night'
+  if (h >= 17) return 'Evening'
+  if (h >= 12) return 'Afternoon'
+  return 'Morning'
+}
+
+const TZ_KEYS = ['own', 'US', 'EU', 'CN', 'KR', 'TW'] as const
+type TZKey = (typeof TZ_KEYS)[number]
+
+interface GuildData {
+  id: number
+  name: string
+  server_name: string | null
+  region: string
+  ce_achieved_at: number | null
+  total_hours: number
+  hours_per_week: number
+  raid_nights: number
+  raid_weeks: number
+  longest_night_hours: number
+  bosses: number
+  // Category pre-computed for each TZ viewpoint. 'own' = the guild's own region.
+  categories: Record<TZKey, Category>
+}
+
+function loadRanked(): GuildData[] {
+  const fights = db
+    .prepare(`
+      WITH mythic_reports AS (
+        SELECT DISTINCT report_code FROM fights
+        WHERE difficulty = 5 AND encounter_id IN (SELECT id FROM encounters)
+      )
+      SELECT f.guild_id, f.start_time, f.end_time
+      FROM fights f
+      JOIN guilds g ON g.id = f.guild_id
+      WHERE f.report_code IN (SELECT report_code FROM mythic_reports)
+        AND (g.ce_achieved_at IS NULL OR f.start_time <= g.ce_achieved_at)
+    `)
+    .all() as { guild_id: number; start_time: number; end_time: number }[]
+
+  const byGuild = new Map<number, { start: number; end: number }[]>()
+  for (const f of fights) {
+    const arr = byGuild.get(f.guild_id) ?? []
+    arr.push({ start: f.start_time, end: f.end_time })
+    byGuild.set(f.guild_id, arr)
   }
 
   const guilds = db
     .prepare(
       'SELECT id, name, server_name, region, ce_achieved_at FROM guilds WHERE reports_synced_at IS NOT NULL',
     )
-    .all() as Pick<RankingRow, 'id' | 'name' | 'server_name' | 'region' | 'ce_achieved_at'>[]
+    .all() as Pick<GuildData, 'id' | 'name' | 'server_name' | 'region' | 'ce_achieved_at'>[]
 
   const bossRows = db
     .prepare(`
@@ -82,60 +124,44 @@ function loadRankings(): RankingRow[] {
     .all() as { guild_id: number; n: number }[]
   const bossByGuild = new Map(bossRows.map(r => [r.guild_id, r.n]))
 
-  const out: RankingRow[] = []
+  const out: GuildData[] = []
   for (const g of guilds) {
-    const intervals = byGuild.get(g.id) ?? []
-    const merged = mergeIntervals(intervals)
-    const total_ms = merged.reduce((s, iv) => s + (iv.last - iv.first), 0)
+    const sessions = buildSessions(byGuild.get(g.id) ?? [])
+    const total_ms = sessions.reduce((s, iv) => s + (iv.last - iv.first), 0)
     if (total_ms === 0) continue
-    const raid_nights = merged.length
-    const raid_weeks = new Set(merged.map(iv => bucketKey(iv.first))).size
+    const raid_weeks = Math.max(new Set(sessions.map(iv => bucketKey(iv.first))).size, 1)
+
+    const catFor = (region: string): Category => {
+      const hrs = sessions.map(iv => localHour(iv.first, region))
+      const avg = circularMeanHour(hrs)
+      const weekendOnly = sessions.every(iv => {
+        const d = localDay(iv.first, region)
+        return d === 0 || d === 5 || d === 6
+      })
+      return categoryOf(avg, weekendOnly)
+    }
+
+    const total_hours = total_ms / 3_600_000
     out.push({
       ...g,
-      total_ms,
-      raid_nights,
+      total_hours,
+      hours_per_week: total_hours / raid_weeks,
+      raid_nights: sessions.length,
       raid_weeks,
+      longest_night_hours: sessions.reduce((m, iv) => Math.max(m, iv.last - iv.first), 0) / 3_600_000,
       bosses: bossByGuild.get(g.id) ?? 0,
+      categories: {
+        own: catFor(g.region),
+        US: catFor('US'),
+        EU: catFor('EU'),
+        CN: catFor('CN'),
+        KR: catFor('KR'),
+        TW: catFor('TW'),
+      },
     })
   }
+  out.sort((a, b) => b.bosses - a.bosses || b.hours_per_week - a.hours_per_week)
   return out
-}
-
-interface RankedGuild extends RankingRow {
-  hours_per_week: number
-  total_hours: number
-}
-
-function rank(rows: RankingRow[]): RankedGuild[] {
-  return rows
-    .map(r => {
-      const total_hours = r.total_ms / 3_600_000
-      const weeks = Math.max(r.raid_weeks, 1)
-      return { ...r, total_hours, hours_per_week: total_hours / weeks }
-    })
-    .sort((a, b) => b.bosses - a.bosses || b.hours_per_week - a.hours_per_week)
-}
-
-function applyFilters(rows: RankedGuild[], f: Filters): RankedGuild[] {
-  return rows.filter(r => {
-    if (f.server && !r.server_name?.toLowerCase().includes(f.server.toLowerCase())) return false
-    if (f.region && r.region !== f.region) return false
-    if (f.minHours !== undefined && r.hours_per_week < f.minHours) return false
-    if (f.maxHours !== undefined && r.hours_per_week > f.maxHours) return false
-    return true
-  })
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
-}
-
-function fmtHours(h: number): string {
-  return h.toFixed(1)
-}
-
-function fmtDate(ms: number | null): string {
-  return ms === null ? '—' : new Date(ms).toISOString().slice(0, 10)
 }
 
 function rateLimitBadge(): string {
@@ -156,8 +182,12 @@ function rateLimitBadge(): string {
   return `<span class="rl-badge" style="color: ${color};">${remaining} credits left · resets in ${mins}m</span>`
 }
 
-export function renderRankingsPage(filters: Filters = {}): string {
-  const rows = applyFilters(rank(loadRankings()), filters)
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
+}
+
+export function renderRankingsPage(): string {
+  const data = loadRanked()
   const totalGuilds = (db.prepare('SELECT COUNT(*) as c FROM guilds').get() as { c: number }).c
   const ceGuilds = (db
     .prepare('SELECT COUNT(*) as c FROM guilds WHERE ce_achieved_at IS NOT NULL')
@@ -165,7 +195,6 @@ export function renderRankingsPage(filters: Filters = {}): string {
   const regions = (db
     .prepare('SELECT DISTINCT region FROM guilds ORDER BY region')
     .all() as { region: string }[]).map(r => r.region)
-
   const servers = (db
     .prepare(
       `SELECT DISTINCT server_name, region FROM guilds
@@ -174,45 +203,75 @@ export function renderRankingsPage(filters: Filters = {}): string {
     )
     .all() as { server_name: string; region: string }[])
 
-  const regionOpts = regions
-    .map(r => `<option value="${r}"${filters.region === r ? ' selected' : ''}>${r}</option>`)
+  const regionChips = [
+    `<a class="preset" data-filter="region=">All regions</a>`,
+    ...regions.map(r => `<a class="preset" data-filter="region=${encodeURIComponent(r)}">${escapeHtml(r)}</a>`),
+  ].join('')
+
+  const hourChips = [
+    { label: 'All', q: 'min_hours=&max_hours=' },
+    { label: 'Chill (3–4)', q: 'min_hours=3&max_hours=4' },
+    { label: 'Steady (6–7)', q: 'min_hours=6&max_hours=7' },
+    { label: 'Hardcore (9–10)', q: 'min_hours=9&max_hours=10' },
+    { label: 'Mythic (10+)', q: 'min_hours=10&max_hours=' },
+  ]
+    .map(c => `<a class="preset" data-filter="${c.q}">${escapeHtml(c.label)}</a>`)
+    .join('')
+
+  const categoryChips = [
+    `<a class="preset" data-filter="category=">All times</a>`,
+    ...CATEGORIES.map(c => `<a class="preset" data-filter="category=${encodeURIComponent(c)}">${escapeHtml(c)}</a>`),
+  ].join('')
+
+  const tzChips = [
+    { key: 'own', label: "Guild's own" },
+    { key: 'US', label: 'US' },
+    { key: 'EU', label: 'EU' },
+    { key: 'CN', label: 'CN' },
+    { key: 'KR', label: 'KR' },
+    { key: 'TW', label: 'TW' },
+  ]
+    .map(t => `<a class="preset" data-filter="tz=${t.key}">${escapeHtml(t.label)}</a>`)
     .join('')
 
   const serverOpts = servers
-    .map(
-      s =>
-        `<option value="${escapeHtml(s.server_name)}"${filters.server === s.server_name ? ' selected' : ''}>${escapeHtml(s.server_name)} (${escapeHtml(s.region)})</option>`,
-    )
+    .map(s => `<option value="${escapeHtml(s.server_name)}">${escapeHtml(s.server_name)} (${escapeHtml(s.region)})</option>`)
     .join('')
-
-  const tbody = rows
-    .map(
-      (r, i) => `
-    <tr>
-      <td>${i + 1}</td>
-      <td>${escapeHtml(r.name)}</td>
-      <td>${escapeHtml(r.server_name ?? '')} <span class="muted">${escapeHtml(r.region)}</span></td>
-      <td class="num">${r.bosses}/9</td>
-      <td class="num">${fmtHours(r.hours_per_week)}</td>
-      <td class="num">${fmtHours(r.total_hours)}</td>
-      <td class="num">${r.raid_nights}</td>
-      <td class="num">${r.raid_weeks}</td>
-      <td>${r.ce_achieved_at !== null ? fmtDate(r.ce_achieved_at) : '<span class="progress">—</span>'}</td>
-    </tr>`,
-    )
-    .join('')
+  const regionOpts = regions.map(r => `<option value="${r}">${r}</option>`).join('')
 
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Guild Rankings — Hours Per Week Before CE</title>
+  <title>Clocked — Hours Raided Before CE</title>
   <style>
     body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; color: #e5e7eb; background: #0f1115; }
     .header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
     .rl-badge { font-size: 13px; font-variant-numeric: tabular-nums; }
+    .awards { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .award { flex: 1 1 200px; background: linear-gradient(180deg, #1a2332 0%, #161b22 100%);
+      border: 1px solid #2d3748; border-radius: 6px; padding: 0.75rem 1rem; }
+    .award-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+      color: #d4a017; font-weight: 600; margin-bottom: 4px; }
+    .award-guild { font-size: 16px; font-weight: 600; color: #f3f4f6; }
+    .award-meta { font-size: 12px; color: #9ca3af; margin-bottom: 4px; }
+    .award-value { font-size: 14px; color: #10b981; font-variant-numeric: tabular-nums; }
+    .guild-link { color: inherit; text-decoration: none; border-bottom: 1px dotted #4b5563; }
+    .guild-link:hover { color: #d4a017; border-bottom-color: #d4a017; }
+    .category-pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+      background: #1f2937; color: #cbd5e1; border: 1px solid #2d3748; }
     h1 { margin-bottom: 0.25rem; color: #f3f4f6; }
+    h1 .tagline { font-size: 0.55em; font-weight: 400; color: #9ca3af; }
     .sub { color: #9ca3af; margin-bottom: 1.5rem; }
+    .presets { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; align-items: center; }
+    .tz-label { font-size: 12px; color: #9ca3af; margin-right: 0.25rem; }
+    .preset {
+      background: #161b22; color: #cbd5e1; border: 1px solid #2d3748;
+      border-radius: 999px; padding: 5px 14px; font-size: 13px;
+      text-decoration: none; transition: background 0.1s; cursor: pointer;
+    }
+    .preset:hover { background: #2d3748; }
+    .preset.active { background: #d4a017; color: #0f1115; border-color: #d4a017; font-weight: 600; }
     form.filters { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem;
       padding: 0.75rem; background: #161b22; border-radius: 6px; }
     form.filters label { display: flex; flex-direction: column; font-size: 12px; color: #9ca3af; gap: 4px; }
@@ -238,14 +297,19 @@ export function renderRankingsPage(filters: Filters = {}): string {
 </head>
 <body>
   <div class="header">
-    <h1>Guild Rankings</h1>
+    <h1>Clocked <span class="tagline">— hours raided before CE</span></h1>
     ${rateLimitBadge()}
   </div>
   <div class="sub">
     Ranked by Mythic bosses killed, tiebroken by hours raided per week before Cutting Edge.
-    ${totalGuilds} guilds tracked · ${ceGuilds} with CE · ${rows.length} shown.
+    ${totalGuilds} guilds tracked · ${ceGuilds} with CE · <span id="shown-count">${data.length}</span> shown.
   </div>
-  <form class="filters" method="get">
+  <div id="awards" class="awards"></div>
+  <div class="presets">${regionChips}</div>
+  <div class="presets">${hourChips}</div>
+  <div class="presets">${categoryChips}</div>
+  <div class="presets"><span class="tz-label">Display times in:</span>${tzChips}</div>
+  <form class="filters" id="filters-form">
     <label>Server
       <select name="server">
         <option value="">All</option>
@@ -259,23 +323,21 @@ export function renderRankingsPage(filters: Filters = {}): string {
       </select>
     </label>
     <label>Min hours/week
-      <input type="number" step="0.1" name="min_hours" value="${filters.minHours ?? ''}" style="width: 90px;">
+      <input type="number" step="0.1" name="min_hours" style="width: 90px;">
     </label>
     <label>Max hours/week
-      <input type="number" step="0.1" name="max_hours" value="${filters.maxHours ?? ''}" style="width: 90px;">
+      <input type="number" step="0.1" name="max_hours" style="width: 90px;">
     </label>
     <button type="submit">Apply</button>
-    <a class="clear" href="/">Clear</a>
+    <a class="clear" href="#" id="clear-filters">Clear</a>
   </form>
-  ${
-    rows.length === 0
-      ? '<div class="empty">No guilds match. Run <code>npm run sync</code> or relax filters.</div>'
-      : `<table>
+  <table>
     <thead>
       <tr>
         <th>#</th>
         <th>Guild</th>
         <th>Server</th>
+        <th>Category</th>
         <th class="num">Bosses</th>
         <th class="num">Hours/week</th>
         <th class="num">Total hours</th>
@@ -284,18 +346,189 @@ export function renderRankingsPage(filters: Filters = {}): string {
         <th>CE</th>
       </tr>
     </thead>
-    <tbody>${tbody}</tbody>
-  </table>`
-  }
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="empty" class="empty" style="display: none;">No guilds match. Relax filters.</div>
+  <script id="guild-data" type="application/json">${JSON.stringify(data)}</script>
   <script>
     (function () {
-      let boot = null
-      const es = new EventSource('/__reload')
-      es.onmessage = function (e) {
-        if (boot !== null && boot !== e.data) location.reload()
-        boot = e.data
+      const GUILDS = JSON.parse(document.getElementById('guild-data').textContent);
+
+      function esc(s) {
+        return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
       }
-    })()
+      function fmtDate(ms) {
+        return ms == null ? '—' : new Date(ms).toISOString().slice(0, 10);
+      }
+      function guildUrl(id) {
+        return 'https://www.warcraftlogs.com/guild/id/' + id;
+      }
+
+      function readFilters() {
+        const p = new URLSearchParams(location.search);
+        return {
+          server: p.get('server') || '',
+          region: p.get('region') || '',
+          category: p.get('category') || '',
+          tz: p.get('tz') || 'own',
+          minHours: p.get('min_hours') !== null && p.get('min_hours') !== '' ? parseFloat(p.get('min_hours')) : null,
+          maxHours: p.get('max_hours') !== null && p.get('max_hours') !== '' ? parseFloat(p.get('max_hours')) : null,
+        };
+      }
+
+      function categoryFor(r, tz) {
+        return r.categories[tz] || r.categories.own;
+      }
+
+      function filterGuilds(f) {
+        return GUILDS.filter(r => {
+          if (f.server && !(r.server_name || '').toLowerCase().includes(f.server.toLowerCase())) return false;
+          if (f.region && r.region !== f.region) return false;
+          if (f.category && categoryFor(r, f.tz) !== f.category) return false;
+          if (f.minHours != null && r.hours_per_week < f.minHours) return false;
+          if (f.maxHours != null && r.hours_per_week > f.maxHours) return false;
+          return true;
+        });
+      }
+
+      function superlatives(rows) {
+        const qualified = rows.filter(r => r.bosses >= 3 && r.total_hours >= 5);
+        if (qualified.length === 0) return [];
+        const mostEfficient = qualified.slice().sort((a, b) => b.bosses / b.total_hours - a.bosses / a.total_hours)[0];
+        const grindiest = rows.slice().sort((a, b) => b.hours_per_week - a.hours_per_week)[0];
+        const mostDisciplined = rows.slice().sort((a, b) => b.raid_nights - a.raid_nights)[0];
+        const marathonNight = qualified.slice().sort((a, b) => b.longest_night_hours - a.longest_night_hours)[0];
+        const fastestProg = qualified.slice().sort((a, b) => b.bosses / Math.max(b.raid_weeks, 1) - a.bosses / Math.max(a.raid_weeks, 1))[0];
+        return [
+          { label: 'Most Efficient', guild: mostEfficient, value: (mostEfficient.bosses / mostEfficient.total_hours).toFixed(2) + ' bosses/hour' },
+          { label: 'Grindiest', guild: grindiest, value: grindiest.hours_per_week.toFixed(1) + ' h/week' },
+          { label: 'Fastest Progression', guild: fastestProg, value: (fastestProg.bosses / Math.max(fastestProg.raid_weeks, 1)).toFixed(1) + ' bosses/week' },
+          { label: 'Marathon Night', guild: marathonNight, value: marathonNight.longest_night_hours.toFixed(1) + 'h session' },
+          { label: 'Most Nights', guild: mostDisciplined, value: mostDisciplined.raid_nights + ' nights' },
+        ];
+      }
+
+      function renderAwards(rows) {
+        const awards = superlatives(rows);
+        const html = awards.map(a => \`<div class="award">
+          <div class="award-label">\${esc(a.label)}</div>
+          <div class="award-guild"><a class="guild-link" href="\${guildUrl(a.guild.id)}" target="_blank" rel="noopener">\${esc(a.guild.name)}</a></div>
+          <div class="award-meta">\${esc(a.guild.server_name ?? '')} <span class="muted">\${esc(a.guild.region)}</span></div>
+          <div class="award-value">\${esc(a.value)}</div>
+        </div>\`).join('');
+        document.getElementById('awards').innerHTML = html;
+      }
+
+      let CURRENT_TZ = 'own';
+
+      function renderTable(rows) {
+        const tbody = document.getElementById('tbody');
+        const empty = document.getElementById('empty');
+        if (rows.length === 0) {
+          tbody.innerHTML = '';
+          empty.style.display = '';
+          return;
+        }
+        empty.style.display = 'none';
+        // Batch DOM update
+        const html = rows.map((r, i) => \`<tr>
+          <td>\${i + 1}</td>
+          <td><a class="guild-link" href="\${guildUrl(r.id)}" target="_blank" rel="noopener">\${esc(r.name)}</a></td>
+          <td>\${esc(r.server_name ?? '')} <span class="muted">\${esc(r.region)}</span></td>
+          <td><span class="category-pill">\${esc(categoryFor(r, CURRENT_TZ))}</span></td>
+          <td class="num">\${r.bosses}/9</td>
+          <td class="num">\${r.hours_per_week.toFixed(1)}</td>
+          <td class="num">\${r.total_hours.toFixed(1)}</td>
+          <td class="num">\${r.raid_nights}</td>
+          <td class="num">\${r.raid_weeks}</td>
+          <td>\${r.ce_achieved_at !== null ? fmtDate(r.ce_achieved_at) : '<span class="progress">—</span>'}</td>
+        </tr>\`).join('');
+        tbody.innerHTML = html;
+      }
+
+      function updateChipActive(f) {
+        document.querySelectorAll('[data-filter]').forEach(el => {
+          const updates = new URLSearchParams(el.dataset.filter);
+          let match = true;
+          for (const [k, v] of updates) {
+            const current = {
+              server: f.server,
+              region: f.region,
+              category: f.category,
+              tz: f.tz,
+              min_hours: f.minHours != null ? String(f.minHours) : '',
+              max_hours: f.maxHours != null ? String(f.maxHours) : '',
+            }[k] || '';
+            if (current !== v) { match = false; break; }
+          }
+          el.classList.toggle('active', match);
+        });
+      }
+
+      function updateFormValues(f) {
+        const form = document.getElementById('filters-form');
+        form.querySelector('[name=server]').value = f.server;
+        form.querySelector('[name=region]').value = f.region;
+        form.querySelector('[name=min_hours]').value = f.minHours != null ? f.minHours : '';
+        form.querySelector('[name=max_hours]').value = f.maxHours != null ? f.maxHours : '';
+      }
+
+      function render() {
+        const f = readFilters();
+        CURRENT_TZ = f.tz;
+        const rows = filterGuilds(f);
+        renderAwards(rows);
+        renderTable(rows);
+        updateChipActive(f);
+        updateFormValues(f);
+        document.getElementById('shown-count').textContent = rows.length;
+      }
+
+      function updateUrl(params) {
+        const qs = params.toString();
+        history.pushState({}, '', qs ? '?' + qs : location.pathname);
+      }
+
+      document.addEventListener('click', e => {
+        const a = e.target.closest('a[data-filter]');
+        if (!a) return;
+        e.preventDefault();
+        const params = new URLSearchParams(location.search);
+        for (const [k, v] of new URLSearchParams(a.dataset.filter)) {
+          if (v === '') params.delete(k); else params.set(k, v);
+        }
+        updateUrl(params);
+        render();
+      });
+
+      document.getElementById('filters-form').addEventListener('submit', e => {
+        e.preventDefault();
+        const data = new FormData(e.target);
+        const params = new URLSearchParams();
+        for (const [k, v] of data) if (v) params.set(k, v);
+        updateUrl(params);
+        render();
+      });
+
+      document.getElementById('clear-filters').addEventListener('click', e => {
+        e.preventDefault();
+        updateUrl(new URLSearchParams());
+        render();
+      });
+
+      window.addEventListener('popstate', render);
+      render();
+    })();
+  </script>
+  <script>
+    (function () {
+      let boot = null;
+      const es = new EventSource('/__reload');
+      es.onmessage = function (e) {
+        if (boot !== null && boot !== e.data) location.reload();
+        boot = e.data;
+      };
+    })();
   </script>
 </body>
 </html>`
