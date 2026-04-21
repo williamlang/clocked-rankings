@@ -4,7 +4,7 @@ on:
   schedule:
     # Every 10 minutes. GitHub silently drops scheduled runs under load, so
     # we over-schedule and rely on the sync being a no-op when rate-limited.
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 concurrency:
