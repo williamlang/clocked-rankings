@@ -197,7 +197,7 @@ function loadRanked(): GuildData[] {
       },
     })
   }
-  out.sort((a, b) => b.bosses - a.bosses || b.hours_per_week - a.hours_per_week)
+  out.sort((a, b) => b.bosses - a.bosses || a.hours_per_week - b.hours_per_week)
   return out
 }
 
