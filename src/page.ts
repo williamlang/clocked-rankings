@@ -290,6 +290,7 @@ export function renderRankingsPage(): string {
     h1 { margin-bottom: 0.25rem; color: #f3f4f6; }
     h1 .tagline { font-size: 0.55em; font-weight: 400; color: #9ca3af; }
     .sub { color: #9ca3af; margin-bottom: 1.5rem; }
+    .warn { color: #d4a017; font-size: 13px; margin-top: 6px; }
     .presets { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; align-items: center; }
     .tz-label { font-size: 12px; color: #9ca3af; margin-right: 0.25rem; }
     .preset {
@@ -334,6 +335,7 @@ export function renderRankingsPage(): string {
     Ranked by Mythic bosses killed, tiebroken by hours raided per week before Cutting Edge.
     ${totalGuilds} guilds tracked · ${ceGuilds} with CE · <span id="shown-count">${data.length}</span> shown.
     <span class="muted">Guilds updated ~once a day.</span>
+    <div class="warn">Don't see your guild? Make sure you publicly log!</div>
   </div>
   <div id="awards" class="awards"></div>
   <div class="presets">${regionChips}</div>
