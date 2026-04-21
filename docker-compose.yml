@@ -17,6 +17,8 @@ services:
       # tsx/chokidar file watching is flaky on bind-mounted volumes on macOS —
       # polling is slower but reliable.
       CHOKIDAR_USEPOLLING: "true"
+      # Skip the in-container sync loop — GitHub Actions handles that now.
+      DISABLE_SYNC: "1"
     restart: unless-stopped
 
   ngrok:

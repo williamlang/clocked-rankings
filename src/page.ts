@@ -265,7 +265,7 @@ export function renderRankingsPage(): string {
   <title>Clocked — Hours Raided Before CE</title>
   <style>
     body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; color: #e5e7eb; background: #0f1115; }
-    .header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+    .header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; justify-content: space-between; }
     .awards { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
     .award { flex: 1 1 200px; background: linear-gradient(180deg, #1a2332 0%, #161b22 100%);
       border: 1px solid #2d3748; border-radius: 6px; padding: 0.75rem 1rem; }
@@ -311,15 +311,18 @@ export function renderRankingsPage(): string {
     .muted { color: #6b7280; font-size: 12px; }
     .progress { color: #6b7280; }
     .empty { padding: 2rem; text-align: center; color: #6b7280; }
+    .credit { color: #6b7280; font-size: 12px; }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>Clocked <span class="tagline">— hours raided before CE</span></h1>
+    <span class="credit">made by Bredie · Area 52 &lt;Death Jesters&gt;</span>
   </div>
   <div class="sub">
     Ranked by Mythic bosses killed, tiebroken by hours raided per week before Cutting Edge.
     ${totalGuilds} guilds tracked · ${ceGuilds} with CE · <span id="shown-count">${data.length}</span> shown.
+    <span class="muted">Guilds updated ~once a day.</span>
   </div>
   <div id="awards" class="awards"></div>
   <div class="presets">${regionChips}</div>
