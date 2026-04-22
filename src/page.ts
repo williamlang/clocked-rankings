@@ -77,6 +77,7 @@ interface GuildData {
   server_name: string | null
   region: string
   ce_achieved_at: number | null
+  reports_synced_at: number | null
   total_hours: number
   hours_per_week: number
   raid_nights: number
@@ -147,9 +148,14 @@ function loadRanked(): GuildData[] {
 
   const guilds = db
     .prepare(
-      'SELECT id, name, server_name, region, ce_achieved_at FROM guilds WHERE reports_synced_at IS NOT NULL',
+      `SELECT id, name, server_name, region, ce_achieved_at,
+              reports_synced_at * 1000 AS reports_synced_at
+       FROM guilds WHERE reports_synced_at IS NOT NULL`,
     )
-    .all() as Pick<GuildData, 'id' | 'name' | 'server_name' | 'region' | 'ce_achieved_at'>[]
+    .all() as Pick<
+      GuildData,
+      'id' | 'name' | 'server_name' | 'region' | 'ce_achieved_at' | 'reports_synced_at'
+    >[]
 
   const bossRows = db
     .prepare(`
@@ -377,6 +383,7 @@ export function renderRankingsPage(): string {
         <th class="num">Nights</th>
         <th class="num">Weeks</th>
         <th>CE</th>
+        <th>Last updated</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
@@ -477,6 +484,7 @@ export function renderRankingsPage(): string {
           <td class="num">\${r.raid_nights}</td>
           <td class="num">\${r.raid_weeks}</td>
           <td>\${r.ce_achieved_at !== null ? fmtDate(r.ce_achieved_at) : '<span class="progress">—</span>'}</td>
+          <td><span class="muted">\${fmtDate(r.reports_synced_at)}</span></td>
         </tr>\`).join('');
         tbody.innerHTML = html;
       }
