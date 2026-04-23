@@ -1,0 +1,58 @@
+name: Deploy (code-only)
+
+# Fast code-only redeploy — no sync step, uses whatever DB is currently
+# in the Actions cache. Triggered on push to main or manually.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-pages  # shared with sync-and-publish so we don't race
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Restore DB cache (read-only)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.config/guild-rankings-by-day/data.db
+          key: clocked-db-readonly-${{ github.run_id }}
+          restore-keys: |
+            clocked-db-
+
+      - name: Build static HTML
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

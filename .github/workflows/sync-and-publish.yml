@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: sync
+  group: deploy-pages  # shared with deploy.yml so Pages deploys don't race
   cancel-in-progress: false  # never kill a running sync; queue instead
 
 permissions:
