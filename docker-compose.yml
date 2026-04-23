@@ -20,14 +20,3 @@ services:
       # Skip the in-container sync loop — GitHub Actions handles that now.
       DISABLE_SYNC: "1"
     restart: unless-stopped
-
-  ngrok:
-    image: ngrok/ngrok:latest
-    command: http app:3457
-    environment:
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
-    ports:
-      - "4040:4040"  # local dashboard — public URL visible here
-    depends_on:
-      - app
-    restart: unless-stopped
