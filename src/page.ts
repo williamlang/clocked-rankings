@@ -326,6 +326,22 @@ export function renderRankingsPage(): string {
     .progress { color: #6b7280; }
     .empty { padding: 2rem; text-align: center; color: #6b7280; }
     .credit { color: #6b7280; font-size: 12px; }
+    .credit a { color: #d4a017; text-decoration: none; }
+    .credit a:hover { text-decoration: underline; }
+    .modal[hidden] { display: none; }
+    .modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center;
+      justify-content: center; padding: 1rem; }
+    .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.7); }
+    .modal-panel { position: relative; background: #161b22; border: 1px solid #2d3748;
+      border-radius: 8px; padding: 1.5rem 2rem; max-width: 650px; max-height: 85vh;
+      overflow-y: auto; color: #e5e7eb; }
+    .modal-panel h2 { margin: 0 0 1rem; color: #f3f4f6; }
+    .modal-panel h3 { margin: 1.25rem 0 0.5rem; color: #d4a017; font-size: 14px;
+      text-transform: uppercase; letter-spacing: 0.05em; }
+    .modal-panel p { margin: 0.5rem 0; line-height: 1.5; font-size: 14px; }
+    .modal-close { position: absolute; top: 0.5rem; right: 0.75rem; background: none;
+      border: none; color: #9ca3af; font-size: 24px; cursor: pointer; line-height: 1; }
+    .modal-close:hover { color: #f3f4f6; }
     th.sortable { cursor: pointer; user-select: none; }
     th.sortable:hover { color: #f3f4f6; }
     th.sortable .sort-arrow { display: inline-block; width: 0.7em; margin-left: 4px; color: #d4a017; }
@@ -335,8 +351,49 @@ export function renderRankingsPage(): string {
   <div class="header">
     <h1>Clocked <span class="tagline">— hours raided before CE</span></h1>
     <span class="credit">
-      ${lastSync ? `last sync: ${escapeHtml(lastSync)} · ` : ''}made by Bredie · Area 52 &lt;Death Jesters&gt;
+      ${lastSync ? `last sync: ${escapeHtml(lastSync)} · ` : ''}<a href="#" id="how-link">how it works</a> · made by Bredie · Area 52 &lt;Death Jesters&gt;
     </span>
+  </div>
+
+  <div id="how-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-panel" role="dialog" aria-labelledby="how-title">
+      <button class="modal-close" data-close aria-label="Close">×</button>
+      <h2 id="how-title">How Clocked works</h2>
+      <h3>What's ranked</h3>
+      <p>Every WoW guild that has killed at least one boss on Mythic difficulty in the
+        current tier (Voidspire / Dreamrift / March on Quel'danas). Guilds with
+        private logs won't appear.</p>
+      <h3>Hours / week</h3>
+      <p>For each raid session (first boss pull to last boss pull of the night),
+        we take the full pull window — including wipes, trash, and breaks between
+        pulls. Overlapping reports (kill-only logs on top of full logs) are merged.
+        Multi-day reports are split into per-night sessions using fight gaps.</p>
+      <p>Total raid time ÷ distinct raid weeks (7-day buckets in which the guild raided).
+        Off-weeks don't dilute the average.</p>
+      <p>All tier reports count toward raid time — Normal, Heroic, and Mythic. Boss
+        kills only count from Mythic.</p>
+      <h3>Before CE</h3>
+      <p>For guilds with Cutting Edge (Midnight Falls Mythic kill), reports after their
+        CE timestamp are excluded. Stat stays frozen once achieved. For guilds still
+        progressing, all reports up to the most recent sync count.</p>
+      <h3>Categories</h3>
+      <p>Each guild's sessions are converted to local hours using a regional offset
+        (US = ET, EU = CET, CN/TW = UTC+8, KR = UTC+9), then bucketed:
+        <strong>Morning</strong> (before noon), <strong>Afternoon</strong> (noon–5pm),
+        <strong>Evening</strong> (5–10pm), <strong>Late Night</strong> (10pm–4am),
+        <strong>Weekend Warrior</strong> (Fri/Sat/Sun only).</p>
+      <p>The "Display times in" selector re-labels every guild's category as if viewed
+        from that region's TZ, so you can find e.g. CN guilds that raid at "Evening US"
+        time.</p>
+      <h3>Caveats</h3>
+      <p>• Guilds with logger settings that only record boss kills (no wipes) will
+        show compressed pull windows.<br>
+        • Guilds running separate Mythic + Heroic teams may over-count (both teams'
+        reports are summed).<br>
+        • Data is pulled from WarcraftLogs — bad logs in means bad data out.</p>
+      <p class="muted">Updated roughly once a day.</p>
+    </div>
   </div>
   <div class="sub">
     Ranked by Mythic bosses killed, tiebroken by hours raided per week before Cutting Edge.
@@ -600,6 +657,19 @@ export function renderRankingsPage(): string {
 
       window.addEventListener('popstate', render);
       render();
+
+      // Modal toggle
+      const modal = document.getElementById('how-modal');
+      document.getElementById('how-link').addEventListener('click', e => {
+        e.preventDefault();
+        modal.hidden = false;
+      });
+      modal.addEventListener('click', e => {
+        if (e.target.hasAttribute('data-close')) modal.hidden = true;
+      });
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && !modal.hidden) modal.hidden = true;
+      });
     })();
   </script>
   ${
