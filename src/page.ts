@@ -657,8 +657,12 @@ export function renderRankingsPage(): string {
       document.getElementById('filters-form').addEventListener('submit', e => {
         e.preventDefault();
         const data = new FormData(e.target);
-        const params = new URLSearchParams();
-        for (const [k, v] of data) if (v) params.set(k, v);
+        // Preserve params not controlled by the form (tz, category, sort, min_bosses).
+        const params = new URLSearchParams(location.search);
+        ['server', 'region', 'min_hours', 'max_hours'].forEach(k => {
+          const v = data.get(k);
+          if (v) params.set(k, v); else params.delete(k);
+        });
         updateUrl(params);
         render();
       });
