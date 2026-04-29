@@ -308,6 +308,8 @@ export function renderRankingsPage(): string {
     }
     .preset:hover { background: #2d3748; }
     .preset.active { background: #d4a017; color: #0f1115; border-color: #d4a017; font-weight: 600; }
+    form.filters input[type=range] { width: 160px; accent-color: #d4a017; padding: 0; }
+    .slider-value { color: #d4a017; font-weight: 600; font-variant-numeric: tabular-nums; }
     form.filters { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem;
       padding: 0.75rem; background: #161b22; border-radius: 6px; }
     form.filters label { display: flex; flex-direction: column; font-size: 12px; color: #9ca3af; gap: 4px; }
@@ -429,6 +431,9 @@ export function renderRankingsPage(): string {
     <label>Max hours/week
       <input type="number" step="0.1" name="max_hours" style="width: 90px;">
     </label>
+    <label><span>Min bosses (≥ <span class="slider-value" id="min-bosses-value">0</span>)</span>
+      <input type="range" id="min-bosses" min="0" max="9" step="1" value="0">
+    </label>
     <button type="submit">Apply</button>
     <a class="clear" href="#" id="clear-filters">Clear</a>
   </form>
@@ -475,6 +480,7 @@ export function renderRankingsPage(): string {
           tz: p.get('tz') || 'own',
           minHours: p.get('min_hours') !== null && p.get('min_hours') !== '' ? parseFloat(p.get('min_hours')) : null,
           maxHours: p.get('max_hours') !== null && p.get('max_hours') !== '' ? parseFloat(p.get('max_hours')) : null,
+          minBosses: p.get('min_bosses') !== null && p.get('min_bosses') !== '' ? parseInt(p.get('min_bosses'), 10) : 0,
           sort: p.get('sort') || '',  // e.g. "hours_per_week-desc"
         };
       }
@@ -497,6 +503,7 @@ export function renderRankingsPage(): string {
           if (f.category && categoryFor(r, f.tz) !== f.category) return false;
           if (f.minHours != null && r.hours_per_week < f.minHours) return false;
           if (f.maxHours != null && r.hours_per_week > f.maxHours) return false;
+          if (f.minBosses > 0 && r.bosses < f.minBosses) return false;
           return true;
         });
       }
@@ -584,6 +591,9 @@ export function renderRankingsPage(): string {
         form.querySelector('[name=region]').value = f.region;
         form.querySelector('[name=min_hours]').value = f.minHours != null ? f.minHours : '';
         form.querySelector('[name=max_hours]').value = f.maxHours != null ? f.maxHours : '';
+        const slider = document.getElementById('min-bosses');
+        slider.value = String(f.minBosses);
+        document.getElementById('min-bosses-value').textContent = String(f.minBosses);
       }
 
       function render() {
@@ -649,6 +659,20 @@ export function renderRankingsPage(): string {
         const data = new FormData(e.target);
         const params = new URLSearchParams();
         for (const [k, v] of data) if (v) params.set(k, v);
+        updateUrl(params);
+        render();
+      });
+
+      const bossSlider = document.getElementById('min-bosses');
+      const bossValue = document.getElementById('min-bosses-value');
+      bossSlider.addEventListener('input', () => {
+        bossValue.textContent = bossSlider.value;
+      });
+      bossSlider.addEventListener('change', () => {
+        const params = new URLSearchParams(location.search);
+        const v = parseInt(bossSlider.value, 10);
+        if (v > 0) params.set('min_bosses', String(v));
+        else params.delete('min_bosses');
         updateUrl(params);
         render();
       });
