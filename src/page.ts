@@ -122,10 +122,18 @@ function loadRanked(): GuildData[] {
   const fightsPerReport = new Map<string, { start: number; end: number }[]>()
   if (multiDayCodes.length > 0) {
     const placeholders = multiDayCodes.map(() => '?').join(',')
+    // Filter fights pre-CE at this level too. Report-level filtering (above)
+    // is sufficient for WCL since each report is one night, but the synthetic
+    // RIO reports span the entire tier, so post-CE pulls would otherwise leak
+    // through and inflate raid_weeks.
     const fightRows = db
       .prepare(
-        `SELECT report_code, start_time, end_time FROM fights
-         WHERE report_code IN (${placeholders}) ORDER BY report_code, start_time`,
+        `SELECT f.report_code, f.start_time, f.end_time
+         FROM fights f
+         JOIN guilds g ON g.id = f.guild_id
+         WHERE f.report_code IN (${placeholders})
+           AND (g.ce_achieved_at IS NULL OR f.start_time <= g.ce_achieved_at)
+         ORDER BY f.report_code, f.start_time`,
       )
       .all(...multiDayCodes) as { report_code: string; start_time: number; end_time: number }[]
     for (const f of fightRows) {
