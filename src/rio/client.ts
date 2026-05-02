@@ -20,7 +20,18 @@ export class RioServerError extends Error {
   }
 }
 
+// Pace requests to stay under Raider.IO's per-key throttle. Unauthenticated
+// is documented as 200/min; with a key it's higher but unspecified. 300ms
+// between calls (~200/min) is well within both. Bursting hit a 403
+// "Access Denied" anti-abuse response after ~90 calls in <30s.
+const MIN_INTERVAL_MS = 300
+let lastCallAt = 0
+
 async function rioGet<T>(path: string, params: Record<string, string | number | undefined>): Promise<T> {
+  const wait = MIN_INTERVAL_MS - (Date.now() - lastCallAt)
+  if (wait > 0) await new Promise(r => setTimeout(r, wait))
+  lastCallAt = Date.now()
+
   const search = new URLSearchParams()
   if (RIO_API_KEY) search.set('access_key', RIO_API_KEY)
   for (const [k, v] of Object.entries(params)) {
@@ -31,6 +42,10 @@ async function rioGet<T>(path: string, params: Record<string, string | number | 
   })
   if (res.status === 429) {
     throw new RioRateLimitError(parseInt(res.headers.get('retry-after') ?? '60', 10))
+  }
+  // 403 "Access Denied" is RIO's anti-abuse soft block — treat as rate-limit.
+  if (res.status === 403) {
+    throw new RioRateLimitError(parseInt(res.headers.get('retry-after') ?? '300', 10))
   }
   if (res.status >= 500) {
     throw new RioServerError(res.status, await res.text())
