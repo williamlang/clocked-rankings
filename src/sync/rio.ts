@@ -66,9 +66,19 @@ const upsertKill = db.prepare(`
     report_code = CASE WHEN excluded.killed_at < killed_at THEN excluded.report_code ELSE report_code END
 `)
 
-const markRioSynced = db.prepare('UPDATE guilds SET rio_updated_at = unixepoch() WHERE id = ?')
+const markRioSynced = db.prepare(
+  'UPDATE guilds SET rio_updated_at = unixepoch(), rio_no_data_at = NULL WHERE id = ?',
+)
+const markRioEmpty = db.prepare('UPDATE guilds SET rio_no_data_at = unixepoch() WHERE id = ?')
 const setCE = db.prepare(
   'UPDATE guilds SET ce_achieved_at = ? WHERE id = ? AND (ce_achieved_at IS NULL OR ce_achieved_at > ?)',
+)
+
+// Skip a guild's API check if we already determined it has no Desktop App
+// data within this TTL. Refreshed when the cache entry expires.
+const NO_DATA_TTL_SECS = 24 * 3600
+const isRecentlyEmpty = db.prepare<[number, number]>(
+  'SELECT 1 FROM guilds WHERE id = ? AND rio_no_data_at IS NOT NULL AND rio_no_data_at > ?',
 )
 
 interface ResolvedGuild {
@@ -189,11 +199,13 @@ async function discoverCandidates(verbose: boolean): Promise<QueuedGuild[]> {
   // scratch on every sync. The pull-ingest step is what we checkpoint.
   const queued: QueuedGuild[] = []
   const seen = new Set<number>()
+  const ttlCutoff = Math.floor(Date.now() / 1000) - NO_DATA_TTL_SECS
 
   for (const region of REGIONS) {
     let page = 0
     let regionTotal = 0
-    let regionSkipped = 0
+    let regionWcl = 0
+    let regionEmptyCache = 0
     while (true) {
       const data = await fetchRaidRankings(region, page, RANKINGS_PAGE_SIZE)
       const rankings = data?.raidRankings ?? []
@@ -210,7 +222,11 @@ async function discoverCandidates(verbose: boolean): Promise<QueuedGuild[]> {
         }
         const resolved = resolveGuild(summary)
         if (resolved.isWclCovered) {
-          regionSkipped += 1
+          regionWcl += 1
+          continue
+        }
+        if (isRecentlyEmpty.get(resolved.id, ttlCutoff)) {
+          regionEmptyCache += 1
           continue
         }
         queued.push({ guildId: resolved.id, rio: summary })
@@ -220,7 +236,8 @@ async function discoverCandidates(verbose: boolean): Promise<QueuedGuild[]> {
       page += 1
     }
     if (verbose) {
-      console.log(`    ${region}: ${regionTotal} ranked (${regionSkipped} already on WCL, ${regionTotal - regionSkipped} candidates)`)
+      const candidates = regionTotal - regionWcl - regionEmptyCache
+      console.log(`    ${region}: ${regionTotal} ranked (${regionWcl} on WCL, ${regionEmptyCache} no-data cached, ${candidates} candidates)`)
     }
   }
   return queued
@@ -279,9 +296,10 @@ export async function syncRio(opts: { verbose?: boolean } = {}): Promise<void> {
         console.log(`    [${i + 1}/${queued.length}] ${rio.name} (${rio.region.slug}-${rio.realm.slug}) — m=${diffCounts.mythic} h=${diffCounts.heroic} n=${diffCounts.normal}`)
       }
     } else {
+      markRioEmpty.run(guildId)
       emptyCount += 1
       if (verbose && emptyCount <= 5) {
-        console.log(`    [${i + 1}/${queued.length}] ${rio.name} (${rio.region.slug}-${rio.realm.slug}) — no Desktop App data`)
+        console.log(`    [${i + 1}/${queued.length}] ${rio.name} (${rio.region.slug}-${rio.realm.slug}) — no Desktop App data (cached for ${NO_DATA_TTL_SECS / 3600}h)`)
       } else if (verbose && emptyCount === 6) {
         console.log(`    ... (further empty results suppressed)`)
       }

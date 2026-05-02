@@ -38,6 +38,7 @@ db.exec(`
     ce_achieved_at INTEGER,
     wcl_updated_at INTEGER,
     rio_updated_at INTEGER,
+    rio_no_data_at INTEGER,
     discovered_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
@@ -95,6 +96,15 @@ if (!guildCols.has('wcl_id')) {
     ALTER TABLE guilds ADD COLUMN rio_updated_at INTEGER;
     UPDATE guilds SET wcl_id = id, wcl_updated_at = reports_synced_at WHERE wcl_id IS NULL;
   `)
+}
+if (!guildCols.has('rio_no_data_at')) {
+  // Refresh in case the previous block already added columns.
+  const cur = new Set(
+    (db.prepare('PRAGMA table_info(guilds)').all() as { name: string }[]).map(c => c.name),
+  )
+  if (!cur.has('rio_no_data_at')) {
+    db.exec('ALTER TABLE guilds ADD COLUMN rio_no_data_at INTEGER')
+  }
 }
 
 db.exec(`
