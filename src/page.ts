@@ -268,9 +268,9 @@ export function renderRankingsPage(): string {
 
   const hourChips = [
     { label: 'All', q: 'min_hours=&max_hours=' },
-    { label: 'Chill (3–4)', q: 'min_hours=3&max_hours=4' },
-    { label: 'Steady (6–7)', q: 'min_hours=6&max_hours=7' },
-    { label: 'Hardcore (9–10)', q: 'min_hours=9&max_hours=10' },
+    { label: 'Chill (3–5)', q: 'min_hours=3&max_hours=5' },
+    { label: 'Steady (5–8)', q: 'min_hours=5&max_hours=8' },
+    { label: 'Hardcore (8–10)', q: 'min_hours=8&max_hours=10' },
     { label: 'Mythic (10+)', q: 'min_hours=10&max_hours=' },
   ]
     .map(c => `<a class="preset" data-filter="${c.q}">${escapeHtml(c.label)}</a>`)
