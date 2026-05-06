@@ -21,15 +21,27 @@ export class RioServerError extends Error {
 }
 
 // Pace requests under Raider.IO's per-key throttle. Authenticated keys are
-// documented at 1000/min; 80ms (~750/min) leaves headroom while keeping
-// total runtime reasonable. Anti-abuse can still 403 on bursts so we throw
-// RioRateLimitError on 403 and let the cursor resume on the next run.
-const MIN_INTERVAL_MS = 80
+// documented at 1000/min, but anti-abuse soft-blocks (403) trigger on
+// sustained uniform bursts well under that. 250ms ± 50ms jitter (~240/min
+// average) breaks the bot-like cadence the heuristic latches onto.
+const MIN_INTERVAL_MS = 250
+const JITTER_MS = 50
+const MAX_403_RETRIES = 1
+const RETRY_403_CAP_SECS = 60
 let lastCallAt = 0
 
-async function rioGet<T>(path: string, params: Record<string, string | number | undefined>): Promise<T> {
-  const wait = MIN_INTERVAL_MS - (Date.now() - lastCallAt)
-  if (wait > 0) await new Promise(r => setTimeout(r, wait))
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms))
+}
+
+async function rioGet<T>(
+  path: string,
+  params: Record<string, string | number | undefined>,
+  retries403 = 0,
+): Promise<T> {
+  const jitter = Math.floor((Math.random() * 2 - 1) * JITTER_MS)
+  const wait = MIN_INTERVAL_MS + jitter - (Date.now() - lastCallAt)
+  if (wait > 0) await sleep(wait)
   lastCallAt = Date.now()
 
   const search = new URLSearchParams()
@@ -43,9 +55,19 @@ async function rioGet<T>(path: string, params: Record<string, string | number | 
   if (res.status === 429) {
     throw new RioRateLimitError(parseInt(res.headers.get('retry-after') ?? '60', 10))
   }
-  // 403 "Access Denied" is RIO's anti-abuse soft block — treat as rate-limit.
+  // 403 "Access Denied" is RIO's anti-abuse soft block. The header default of
+  // 300s overstates how long the block actually lasts; cap our in-process
+  // sleep at RETRY_403_CAP_SECS so a single run can recover. If a retry also
+  // 403s, give up and let the next cron run resume from the cursor.
   if (res.status === 403) {
-    throw new RioRateLimitError(parseInt(res.headers.get('retry-after') ?? '300', 10))
+    const retryAfter = parseInt(res.headers.get('retry-after') ?? '300', 10)
+    if (retries403 < MAX_403_RETRIES) {
+      const sleepSecs = Math.min(retryAfter, RETRY_403_CAP_SECS)
+      console.log(`  RIO 403 anti-abuse — sleeping ${sleepSecs}s then retrying once`)
+      await sleep(sleepSecs * 1000)
+      return rioGet<T>(path, params, retries403 + 1)
+    }
+    throw new RioRateLimitError(retryAfter)
   }
   if (res.status >= 500) {
     throw new RioServerError(res.status, await res.text())
